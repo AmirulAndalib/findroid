@@ -1,4 +1,10 @@
 <resources>
+    <!-- Player theme -->
+    <style name="Theme.Findroid.Player" parent="Theme.Findroid">
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+
     <!-- Base application theme. -->
     <style name="Theme.Findroid" parent="Base.Theme.Findroid" />
 
@@ -18,6 +24,9 @@
         <!-- Surface -->
         <item name="android:colorBackground">@color/neutral_50</item>
         <item name="colorSurface">@color/neutral_100</item>
+        <item name="colorSurfaceContainer">?attr/colorSurface</item>
+        <item name="colorSurfaceContainerLow">?attr/colorSurface</item>
+        <item name="colorSurfaceContainerHigh">?attr/colorSurface</item>
 
         <!-- Error -->
         <item name="colorError">@color/red</item>
@@ -37,7 +46,7 @@
         <item name="toolbarStyle">@style/Widget.Material3.Toolbar.Surface</item>
 
         <!-- Navigation bar -->
-        <item name="android:navigationBarColor">?attr/colorSurface</item>
+        <item name="android:navigationBarColor">?attr/colorSurfaceContainer</item>
         <item name="android:windowLightNavigationBar">?attr/isLightTheme</item>
 
         <!-- Extra -->
@@ -45,7 +54,6 @@
         <item name="alertDialogTheme">@style/ThemeOverlay.Material3.MaterialAlertDialog</item>
         <item name="dialogCornerRadius">28dp</item>
         <item name="preferenceTheme">@style/ThemeOverlay.Findroid.Preference</item>
-        <item name="dolbyColor">#000</item>
     </style>
 
     <string-array name="themes">
