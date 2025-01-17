@@ -2,6 +2,9 @@ package dev.jdtech.jellyfin.dialogs
 
 import android.app.Dialog
 import android.os.Bundle
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.DialogFragment
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dev.jdtech.jellyfin.player.video.R
@@ -9,7 +12,7 @@ import dev.jdtech.jellyfin.viewmodels.PlayerActivityViewModel
 import java.lang.IllegalStateException
 
 class SpeedSelectionDialogFragment(
-    private val viewModel: PlayerActivityViewModel
+    private val viewModel: PlayerActivityViewModel,
 ) : DialogFragment() {
     override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
         val speedTexts = listOf("0.5x", "0.75x", "1x", "1.25x", "1.5x", "1.75x", "2x")
@@ -20,14 +23,25 @@ class SpeedSelectionDialogFragment(
             builder.setTitle(getString(R.string.select_playback_speed))
                 .setSingleChoiceItems(
                     speedTexts.toTypedArray(),
-                    speedNumbers.indexOf(viewModel.playbackSpeed)
+                    speedNumbers.indexOf(viewModel.playbackSpeed),
                 ) { dialog, which ->
                     viewModel.selectSpeed(
-                        speedNumbers[which]
+                        speedNumbers[which],
                     )
                     dialog.dismiss()
                 }
             builder.create()
         } ?: throw IllegalStateException("Activity cannot be null")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Fix for hiding the system bars on API < 30
+        activity?.window?.let {
+            WindowCompat.getInsetsController(it, it.decorView).apply {
+                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                hide(WindowInsetsCompat.Type.systemBars())
+            }
+        }
     }
 }

@@ -7,19 +7,20 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import dagger.hilt.android.AndroidEntryPoint
 import dev.jdtech.jellyfin.AppPreferences
 import dev.jdtech.jellyfin.core.R
+import dev.jdtech.jellyfin.models.CollectionType
 import dev.jdtech.jellyfin.models.SortBy
 import dev.jdtech.jellyfin.viewmodels.LibraryViewModel
+import org.jellyfin.sdk.model.api.SortOrder
 import java.lang.IllegalStateException
 import java.util.UUID
 import javax.inject.Inject
-import org.jellyfin.sdk.model.api.SortOrder
 
 @AndroidEntryPoint
 class SortDialogFragment(
     private val parentId: UUID,
-    private val libraryType: String?,
+    private val libraryType: CollectionType,
     private val viewModel: LibraryViewModel,
-    private val sortType: String
+    private val sortType: String,
 ) : DialogFragment() {
     @Inject
     lateinit var appPreferences: AppPreferences
@@ -43,11 +44,12 @@ class SortDialogFragment(
             when (sortType) {
                 "sortBy" -> {
                     val sortByOptions = resources.getStringArray(R.array.sort_by_options)
-                    val sortByValues = SortBy.values()
+                    val sortByValues = SortBy.entries
                     builder
                         .setTitle(getString(R.string.sort_by))
                         .setSingleChoiceItems(
-                            sortByOptions, currentSortBy.ordinal
+                            sortByOptions,
+                            currentSortBy.ordinal,
                         ) { dialog, which ->
                             val sortBy = sortByValues[which]
                             appPreferences.sortBy = sortBy.name
@@ -55,19 +57,20 @@ class SortDialogFragment(
                                 parentId,
                                 libraryType,
                                 sortBy = sortBy,
-                                sortOrder = currentSortOrder
+                                sortOrder = currentSortOrder,
                             )
                             dialog.dismiss()
                         }
                 }
                 "sortOrder" -> {
                     val sortByOptions = resources.getStringArray(R.array.sort_order_options)
-                    val sortOrderValues = SortOrder.values()
+                    val sortOrderValues = SortOrder.entries
 
                     builder
                         .setTitle(getString(R.string.sort_order))
                         .setSingleChoiceItems(
-                            sortByOptions, currentSortOrder.ordinal
+                            sortByOptions,
+                            currentSortOrder.ordinal,
                         ) { dialog, which ->
                             val sortOrder = try {
                                 sortOrderValues[which]
@@ -81,7 +84,7 @@ class SortDialogFragment(
                                 parentId,
                                 libraryType,
                                 sortBy = currentSortBy,
-                                sortOrder = sortOrder
+                                sortOrder = sortOrder,
                             )
                             dialog.dismiss()
                         }
