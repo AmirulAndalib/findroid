@@ -9,13 +9,13 @@ import androidx.fragment.app.viewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import androidx.navigation.fragment.findNavController
 import androidx.navigation.fragment.navArgs
 import dagger.hilt.android.AndroidEntryPoint
 import dev.jdtech.jellyfin.adapters.ServerAddressAdapter
 import dev.jdtech.jellyfin.databinding.FragmentServerAddressesBinding
 import dev.jdtech.jellyfin.dialogs.AddServerAddressDialog
 import dev.jdtech.jellyfin.dialogs.DeleteServerAddressDialog
+import dev.jdtech.jellyfin.viewmodels.ServerAddressesEvent
 import dev.jdtech.jellyfin.viewmodels.ServerAddressesViewModel
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -25,12 +25,12 @@ class ServerAddressesFragment : Fragment() {
 
     private lateinit var binding: FragmentServerAddressesBinding
     private val viewModel: ServerAddressesViewModel by viewModels()
-    private val args: UsersFragmentArgs by navArgs()
+    private val args: ServerAddressesFragmentArgs by navArgs()
 
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
-        savedInstanceState: Bundle?
+        savedInstanceState: Bundle?,
     ): View {
         binding = FragmentServerAddressesBinding.inflate(inflater)
 
@@ -42,24 +42,24 @@ class ServerAddressesFragment : Fragment() {
                 { address ->
                     DeleteServerAddressDialog(viewModel, address).show(
                         parentFragmentManager,
-                        "deleteServerAddress"
+                        "deleteServerAddress",
                     )
                     true
-                }
+                },
             )
 
         binding.buttonAddAddress.setOnClickListener {
             AddServerAddressDialog(viewModel).show(
                 parentFragmentManager,
-                "addServerAddress"
+                "addServerAddress",
             )
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.navigateToMain.collect {
-                    if (it) {
-                        navigateToMainActivity()
+                viewModel.eventsChannelFlow.collect { event ->
+                    when (event) {
+                        is ServerAddressesEvent.NavigateToHome -> navigateToMainActivity()
                     }
                 }
             }
@@ -92,6 +92,6 @@ class ServerAddressesFragment : Fragment() {
     }
 
     private fun navigateToMainActivity() {
-        findNavController().navigate(UsersFragmentDirections.actionUsersFragmentToHomeFragment())
+        // findNavController().safeNavigate(ServerAddressesFragmentDirections.actionUsersFragmentToHomeFragment())
     }
 }

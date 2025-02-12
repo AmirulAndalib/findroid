@@ -1,12 +1,15 @@
 package dev.jdtech.jellyfin.models
 
-enum class SortBy(val SortString: String) {
+enum class SortBy(val sortString: String) {
     NAME("SortName"),
+    Random("Random"),
     IMDB_RATING("CommunityRating"),
     PARENTAL_RATING("CriticRating"),
     DATE_ADDED("DateCreated"),
     DATE_PLAYED("DatePlayed"),
-    RELEASE_DATE("PremiereDate");
+    RELEASE_DATE("PremiereDate"),
+    SERIES_DATE_PLAYED("SeriesDatePlayed"),
+    ;
 
     companion object {
         val defaultValue = NAME

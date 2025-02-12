@@ -1,10 +1,11 @@
 package dev.jdtech.jellyfin.viewmodels
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.Looper
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.AudioAttributes
@@ -12,85 +13,109 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.jdtech.jellyfin.AppPreferences
-import dev.jdtech.jellyfin.database.DownloadDatabaseDao
-import dev.jdtech.jellyfin.models.Intro
+import dev.jdtech.jellyfin.models.FindroidSegment
+import dev.jdtech.jellyfin.models.PlayerChapter
 import dev.jdtech.jellyfin.models.PlayerItem
+import dev.jdtech.jellyfin.models.Trickplay
 import dev.jdtech.jellyfin.mpv.MPVPlayer
-import dev.jdtech.jellyfin.mpv.TrackType
+import dev.jdtech.jellyfin.player.video.R
 import dev.jdtech.jellyfin.repository.JellyfinRepository
-import dev.jdtech.jellyfin.utils.postDownloadPlaybackProgress
-import java.util.UUID
-import javax.inject.Inject
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Runnable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
+import java.util.UUID
+import javax.inject.Inject
+import kotlin.math.ceil
 
 @HiltViewModel
 class PlayerActivityViewModel
 @Inject
 constructor(
-    application: Application,
+    private val application: Application,
     private val jellyfinRepository: JellyfinRepository,
-    private val downloadDatabase: DownloadDatabaseDao,
     private val appPreferences: AppPreferences,
+    private val savedStateHandle: SavedStateHandle,
 ) : ViewModel(), Player.Listener {
     val player: Player
 
-    private val _navigateBack = MutableLiveData<Boolean>()
-    val navigateBack: LiveData<Boolean> = _navigateBack
+    private val _uiState = MutableStateFlow(
+        UiState(
+            currentItemTitle = "",
+            currentSegment = null,
+            currentTrickplay = null,
+            currentChapters = null,
+            fileLoaded = false,
+        ),
+    )
+    val uiState = _uiState.asStateFlow()
 
-    private val _currentItemTitle = MutableLiveData<String>()
-    val currentItemTitle: LiveData<String> = _currentItemTitle
+    private val eventsChannel = Channel<PlayerEvents>()
+    val eventsChannelFlow = eventsChannel.receiveAsFlow()
 
-    private val intros: MutableMap<UUID, Intro> = mutableMapOf()
-    private val _currentIntro = MutableLiveData<Intro?>(null)
-    val currentIntro: LiveData<Intro?> = _currentIntro
-
-    var currentAudioTracks: MutableList<MPVPlayer.Companion.Track> = mutableListOf()
-    var currentSubtitleTracks: MutableList<MPVPlayer.Companion.Track> = mutableListOf()
-
-    private val _fileLoaded = MutableLiveData(false)
-    val fileLoaded: LiveData<Boolean> = _fileLoaded
+    data class UiState(
+        val currentItemTitle: String,
+        val currentSegment: FindroidSegment?,
+        val currentTrickplay: Trickplay?,
+        val currentChapters: List<PlayerChapter>?,
+        val fileLoaded: Boolean,
+    )
 
     private var items: Array<PlayerItem> = arrayOf()
 
-    val trackSelector = DefaultTrackSelector(application)
+    private val trackSelector = DefaultTrackSelector(application)
     var playWhenReady = true
-    private var playFromDownloads = false
-    private var currentMediaItemIndex = 0
-    private var playbackPosition: Long = 0
+    private var currentMediaItemIndex = savedStateHandle["mediaItemIndex"] ?: 0
+    private var playbackPosition: Long = savedStateHandle["position"] ?: 0
+    private var currentSegments: List<FindroidSegment> = emptyList()
 
     var playbackSpeed: Float = 1f
-    var disableSubtitle: Boolean = false
 
     private val handler = Handler(Looper.getMainLooper())
 
     init {
         if (appPreferences.playerMpv) {
+            val trackSelectionParameters = TrackSelectionParameters.Builder(application)
+                .setPreferredAudioLanguage(appPreferences.preferredAudioLanguage)
+                .setPreferredTextLanguage(appPreferences.preferredSubtitleLanguage)
+                .build()
             player = MPVPlayer(
-                application,
-                false,
-                appPreferences
+                context = application,
+                requestAudioFocus = true,
+                trackSelectionParameters = trackSelectionParameters,
+                seekBackIncrement = appPreferences.playerSeekBackIncrement,
+                seekForwardIncrement = appPreferences.playerSeekForwardIncrement,
+                videoOutput = appPreferences.playerMpvVo,
+                audioOutput = appPreferences.playerMpvAo,
+                hwDec = appPreferences.playerMpvHwdec,
+                pauseAtEndOfMediaItems = true,
             )
         } else {
             val renderersFactory =
                 DefaultRenderersFactory(application).setExtensionRendererMode(
-                    DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+                    DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON,
                 )
             trackSelector.setParameters(
                 trackSelector.buildUponParameters()
                     .setTunnelingEnabled(true)
                     .setPreferredAudioLanguage(appPreferences.preferredAudioLanguage)
-                    .setPreferredTextLanguage(appPreferences.preferredSubtitleLanguage)
+                    .setPreferredTextLanguage(appPreferences.preferredSubtitleLanguage),
             )
             player = ExoPlayer.Builder(application, renderersFactory)
                 .setTrackSelector(trackSelector)
@@ -99,40 +124,33 @@ constructor(
                         .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                         .setUsage(C.USAGE_MEDIA)
                         .build(),
-                    /* handleAudioFocus = */ true
+                    /* handleAudioFocus = */
+                    true,
                 )
                 .setSeekBackIncrementMs(appPreferences.playerSeekBackIncrement)
                 .setSeekForwardIncrementMs(appPreferences.playerSeekForwardIncrement)
+                .setPauseAtEndOfMediaItems(true)
                 .build()
         }
     }
 
     fun initializePlayer(
-        items: Array<PlayerItem>
+        items: Array<PlayerItem>,
     ) {
         this.items = items
         player.addListener(this)
 
         viewModelScope.launch {
-            val mediaItems: MutableList<MediaItem> = mutableListOf()
+            val mediaItems = mutableListOf<MediaItem>()
             try {
                 for (item in items) {
-                    val streamUrl = when {
-                        item.mediaSourceUri.isNotEmpty() -> item.mediaSourceUri
-                        else -> jellyfinRepository.getStreamUrl(item.itemId, item.mediaSourceId)
-                    }
+                    val streamUrl = item.mediaSourceUri
                     val mediaSubtitles = item.externalSubtitles.map { externalSubtitle ->
                         MediaItem.SubtitleConfiguration.Builder(externalSubtitle.uri)
-                            .setLabel(externalSubtitle.title)
+                            .setLabel(externalSubtitle.title.ifBlank { application.getString(R.string.external) })
                             .setMimeType(externalSubtitle.mimeType)
                             .setLanguage(externalSubtitle.language)
                             .build()
-                    }
-                    playFromDownloads = item.mediaSourceUri.isNotEmpty()
-
-                    if (appPreferences.playerIntroSkipper) {
-                        val intro = jellyfinRepository.getIntroTimestamps(item.itemId)
-                        if (intro != null) intros[item.itemId] = intro
                     }
 
                     Timber.d("Stream url: $streamUrl")
@@ -143,7 +161,7 @@ constructor(
                             .setMediaMetadata(
                                 MediaMetadata.Builder()
                                     .setTitle(item.name)
-                                    .build()
+                                    .build(),
                             )
                             .setSubtitleConfigurations(mediaSubtitles)
                             .build()
@@ -153,12 +171,17 @@ constructor(
                 Timber.e(e)
             }
 
-            player.setMediaItems(mediaItems, currentMediaItemIndex, items.getOrNull(currentMediaItemIndex)?.playbackPosition ?: C.TIME_UNSET)
-            if (appPreferences.playerMpv && playFromDownloads) { // For some reason, adding a 1ms delay between these two lines fixes a crash when playing with mpv from downloads
-                withContext(Dispatchers.IO) {
-                    Thread.sleep(1)
-                }
+            val startPosition = if (playbackPosition == 0L) {
+                items.getOrNull(currentMediaItemIndex)?.playbackPosition ?: C.TIME_UNSET
+            } else {
+                playbackPosition
             }
+
+            player.setMediaItems(
+                mediaItems,
+                currentMediaItemIndex,
+                startPosition,
+            )
             player.prepare()
             player.play()
             pollPosition(player)
@@ -168,22 +191,25 @@ constructor(
     @OptIn(DelicateCoroutinesApi::class)
     private fun releasePlayer() {
         val mediaId = player.currentMediaItem?.mediaId
-        val position = player.currentPosition.times(10000)
+        val position = player.currentPosition
+        val duration = player.duration
         GlobalScope.launch {
             delay(1000L)
             try {
                 jellyfinRepository.postPlaybackStop(
                     UUID.fromString(mediaId),
-                    position
+                    position.times(10000),
+                    position.div(duration.toFloat()).times(100).toInt(),
                 )
             } catch (e: Exception) {
                 Timber.e(e)
             }
         }
 
-        playWhenReady = player.playWhenReady
-        playbackPosition = player.currentPosition
-        currentMediaItemIndex = player.currentMediaItemIndex
+        _uiState.update { it.copy(currentTrickplay = null) }
+        playWhenReady = false
+        playbackPosition = 0L
+        currentMediaItemIndex = 0
         player.removeListener(this)
         player.release()
     }
@@ -191,17 +217,15 @@ constructor(
     private fun pollPosition(player: Player) {
         val playbackProgressRunnable = object : Runnable {
             override fun run() {
+                savedStateHandle["position"] = player.currentPosition
                 viewModelScope.launch {
                     if (player.currentMediaItem != null && player.currentMediaItem!!.mediaId.isNotEmpty()) {
                         val itemId = UUID.fromString(player.currentMediaItem!!.mediaId)
-                        if (playFromDownloads) {
-                            postDownloadPlaybackProgress(downloadDatabase, items[0].itemId, player.currentPosition.times(10000), (player.currentPosition.toDouble() / player.duration.toDouble()).times(100)) // TODO Automatically use the correct item
-                        }
                         try {
                             jellyfinRepository.postPlaybackProgress(
                                 itemId,
                                 player.currentPosition.times(10000),
-                                !player.isPlaying
+                                !player.isPlaying,
                             )
                         } catch (e: Exception) {
                             Timber.e(e)
@@ -211,46 +235,74 @@ constructor(
                 handler.postDelayed(this, 5000L)
             }
         }
-        val introCheckRunnable = object : Runnable {
+        val segmentCheckRunnable = object : Runnable {
             override fun run() {
-                if (player.currentMediaItem != null && player.currentMediaItem!!.mediaId.isNotEmpty()) {
-                    val itemId = UUID.fromString(player.currentMediaItem!!.mediaId)
-                    intros[itemId].let {
-                        if (it != null) {
-                            val seconds = player.currentPosition / 1000.0
-                            if (seconds > it.showSkipPromptAt && seconds < it.hideSkipPromptAt) {
-                                _currentIntro.value = it
-                                return@let
-                            }
-                        }
-
-                        _currentIntro.value = null
-                    }
-                }
+                updateCurrentSegment()
                 handler.postDelayed(this, 1000L)
             }
         }
         handler.post(playbackProgressRunnable)
-        if (intros.isNotEmpty()) handler.post(introCheckRunnable)
+        handler.post(segmentCheckRunnable)
     }
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         Timber.d("Playing MediaItem: ${mediaItem?.mediaId}")
+        savedStateHandle["mediaItemIndex"] = player.currentMediaItemIndex
         viewModelScope.launch {
             try {
-                for (item in items) {
-                    if (item.itemId.toString() == (player.currentMediaItem?.mediaId ?: "")) {
-                        if (appPreferences.displayExtendedTitle && item.parentIndexNumber != null && item.indexNumber != null && item.name != null
-                        )
-                            _currentItemTitle.value =
+                items.first { it.itemId.toString() == player.currentMediaItem?.mediaId }
+                    .let { item ->
+                        val itemTitle = if (item.parentIndexNumber != null && item.indexNumber != null) {
+                            if (item.indexNumberEnd == null) {
                                 "S${item.parentIndexNumber}:E${item.indexNumber} - ${item.name}"
-                        else
-                            _currentItemTitle.value = item.name.orEmpty()
+                            } else {
+                                "S${item.parentIndexNumber}:E${item.indexNumber}-${item.indexNumberEnd} - ${item.name}"
+                            }
+                        } else {
+                            item.name
+                        }
+                        _uiState.update {
+                            it.copy(
+                                currentItemTitle = itemTitle,
+                                currentSegment = null,
+                                currentChapters = item.chapters,
+                                fileLoaded = false,
+                            )
+                        }
+
+                        jellyfinRepository.postPlaybackStart(item.itemId)
+
+                        if (appPreferences.playerTrickplay) {
+                            getTrickplay(item)
+                        }
+                        if (appPreferences.playerIntroSkipper) {
+                            getSegments(item)
+                        }
                     }
-                }
-                jellyfinRepository.postPlaybackStart(UUID.fromString(mediaItem?.mediaId))
             } catch (e: Exception) {
                 Timber.e(e)
+            }
+        }
+    }
+
+    override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        // Report playback stopped for current item and transition to the next one
+        if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM && player.playbackState == ExoPlayer.STATE_READY) {
+            viewModelScope.launch {
+                val mediaId = player.currentMediaItem?.mediaId
+                val position = player.currentPosition
+                val duration = player.duration
+                try {
+                    jellyfinRepository.postPlaybackStop(
+                        UUID.fromString(mediaId),
+                        position.times(10000),
+                        position.div(duration.toFloat()).times(100).toInt(),
+                    )
+                } catch (e: Exception) {
+                    Timber.e(e)
+                }
+                player.seekToNextMediaItem()
+                player.play()
             }
         }
     }
@@ -266,28 +318,11 @@ constructor(
             }
             ExoPlayer.STATE_READY -> {
                 stateString = "ExoPlayer.STATE_READY     -"
-                currentAudioTracks.clear()
-                currentSubtitleTracks.clear()
-                when (player) {
-                    is MPVPlayer -> {
-                        player.currentMpvTracks.forEach {
-                            when (it.type) {
-                                TrackType.VIDEO -> Unit
-                                TrackType.AUDIO -> {
-                                    currentAudioTracks.add(it)
-                                }
-                                TrackType.SUBTITLE -> {
-                                    currentSubtitleTracks.add(it)
-                                }
-                            }
-                        }
-                    }
-                }
-                _fileLoaded.value = true
+                _uiState.update { it.copy(fileLoaded = true) }
             }
             ExoPlayer.STATE_ENDED -> {
                 stateString = "ExoPlayer.STATE_ENDED     -"
-                _navigateBack.value = true
+                eventsChannel.trySend(PlayerEvents.NavigateBack)
             }
         }
         Timber.d("Changed player state to $stateString")
@@ -300,10 +335,22 @@ constructor(
         releasePlayer()
     }
 
-    fun switchToTrack(trackType: TrackType, track: MPVPlayer.Companion.Track) {
-        if (player is MPVPlayer) {
-            player.selectTrack(trackType, id = track.id)
-            disableSubtitle = track.ffIndex == -1
+    fun switchToTrack(trackType: @C.TrackType Int, index: Int) {
+        // Index -1 equals disable track
+        if (index == -1) {
+            player.trackSelectionParameters = player.trackSelectionParameters
+                .buildUpon()
+                .clearOverridesOfType(trackType)
+                .setTrackTypeDisabled(trackType, true)
+                .build()
+        } else {
+            player.trackSelectionParameters = player.trackSelectionParameters
+                .buildUpon()
+                .setOverrideForType(
+                    TrackSelectionOverride(player.currentTracks.groups.filter { it.type == trackType && it.isSupported }[index].mediaTrackGroup, 0),
+                )
+                .setTrackTypeDisabled(trackType, false)
+                .build()
         }
     }
 
@@ -311,4 +358,141 @@ constructor(
         player.setPlaybackSpeed(speed)
         playbackSpeed = speed
     }
+
+    private suspend fun getTrickplay(item: PlayerItem) {
+        val trickplayInfo = item.trickplayInfo ?: return
+        Timber.d("Trickplay Resolution: ${trickplayInfo.width}")
+
+        withContext(Dispatchers.Default) {
+            val maxIndex = ceil(trickplayInfo.thumbnailCount.toDouble().div(trickplayInfo.tileWidth * trickplayInfo.tileHeight)).toInt()
+            val bitmaps = mutableListOf<Bitmap>()
+
+            for (i in 0..maxIndex) {
+                jellyfinRepository.getTrickplayData(
+                    item.itemId,
+                    trickplayInfo.width,
+                    i,
+                )?.let { byteArray ->
+                    val fullBitmap = BitmapFactory.decodeByteArray(byteArray, 0, byteArray.size)
+                    for (offsetY in 0..<trickplayInfo.height * trickplayInfo.tileHeight step trickplayInfo.height) {
+                        for (offsetX in 0..<trickplayInfo.width * trickplayInfo.tileWidth step trickplayInfo.width) {
+                            val bitmap = Bitmap.createBitmap(fullBitmap, offsetX, offsetY, trickplayInfo.width, trickplayInfo.height)
+                            bitmaps.add(bitmap)
+                        }
+                    }
+                }
+            }
+            _uiState.update { it.copy(currentTrickplay = Trickplay(trickplayInfo.interval, bitmaps)) }
+        }
+    }
+
+    private suspend fun getSegments(item: PlayerItem) {
+        jellyfinRepository.getSegments(item.itemId).let { segments ->
+            currentSegments = segments
+        }
+    }
+
+    private fun updateCurrentSegment() {
+        if (currentSegments.isEmpty()) {
+            return
+        }
+        val seconds = player.currentPosition / 1000.0
+
+        val currentSegment = currentSegments.find { segment -> seconds in segment.startTime..<segment.endTime }
+        Timber.tag("SegmentInfo").d("currentSegment: %s", currentSegment)
+        _uiState.update { it.copy(currentSegment = currentSegment) }
+    }
+
+    /**
+     * Get chapters of current item
+     * @return list of [PlayerChapter]
+     */
+    private fun getChapters(): List<PlayerChapter>? {
+        return uiState.value.currentChapters
+    }
+
+    /**
+     * Get the index of the current chapter
+     * @return the index of the current chapter
+     */
+    private fun getCurrentChapterIndex(): Int? {
+        val chapters = getChapters() ?: return null
+
+        for (i in chapters.indices.reversed()) {
+            if (chapters[i].startPosition < player.currentPosition) {
+                return i
+            }
+        }
+
+        return null
+    }
+
+    /**
+     * Get the index of the next chapter
+     * @return the index of the next chapter
+     */
+    private fun getNextChapterIndex(): Int? {
+        val chapters = getChapters() ?: return null
+        val currentChapterIndex = getCurrentChapterIndex() ?: return null
+
+        return minOf(chapters.size - 1, currentChapterIndex + 1)
+    }
+
+    /**
+     * Get the index of the previous chapter.
+     * Only use this for seeking as it will return the current chapter when player position is more than 5 seconds past the start of the chapter
+     * @return the index of the previous chapter
+     */
+    private fun getPreviousChapterIndex(): Int? {
+        val chapters = getChapters() ?: return null
+        val currentChapterIndex = getCurrentChapterIndex() ?: return null
+
+        // Return current chapter when more than 5 seconds past chapter start
+        if (player.currentPosition > chapters[currentChapterIndex].startPosition + 5000L) {
+            return currentChapterIndex
+        }
+
+        return maxOf(0, currentChapterIndex - 1)
+    }
+
+    fun isFirstChapter(): Boolean? = getChapters()?.let { getCurrentChapterIndex() == 0 }
+    fun isLastChapter(): Boolean? = getChapters()?.let { chapters -> getCurrentChapterIndex() == chapters.size - 1 }
+
+    /**
+     * Seek to chapter
+     * @param [chapterIndex] the index of the chapter to seek to
+     * @return the [PlayerChapter] which has been sought to
+     */
+    private fun seekToChapter(chapterIndex: Int): PlayerChapter? {
+        return getChapters()?.getOrNull(chapterIndex)?.also { chapter ->
+            player.seekTo(chapter.startPosition)
+        }
+    }
+
+    /**
+     * Seek to the next chapter
+     * @return the [PlayerChapter] which has been sought to
+     */
+    fun seekToNextChapter(): PlayerChapter? {
+        return getNextChapterIndex()?.let { seekToChapter(it) }
+    }
+
+    /**
+     * Seek to the previous chapter
+     * Will seek to start of current chapter if player position is more than 5 seconds past start of chapter
+     * @return the [PlayerChapter] which has been sought to
+     */
+    fun seekToPreviousChapter(): PlayerChapter? {
+        return getPreviousChapterIndex()?.let { seekToChapter(it) }
+    }
+
+    override fun onIsPlayingChanged(isPlaying: Boolean) {
+        super.onIsPlayingChanged(isPlaying)
+        eventsChannel.trySend(PlayerEvents.IsPlayingChanged(isPlaying))
+    }
+}
+
+sealed interface PlayerEvents {
+    data object NavigateBack : PlayerEvents
+    data class IsPlayingChanged(val isPlaying: Boolean) : PlayerEvents
 }
