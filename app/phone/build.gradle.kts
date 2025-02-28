@@ -1,9 +1,10 @@
-@Suppress("DSL_SCOPE_VIOLATION") // False positive
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose.compiler)
     alias(libs.plugins.kotlin.parcelize)
-    alias(libs.plugins.kotlin.kapt)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.androidx.navigation.safeargs)
     alias(libs.plugins.hilt)
     alias(libs.plugins.aboutlibraries)
@@ -12,36 +13,55 @@ plugins {
 
 android {
     namespace = "dev.jdtech.jellyfin"
-    compileSdk = 33
-    buildToolsVersion = "33.0.2"
+    compileSdk = Versions.compileSdk
+    buildToolsVersion = Versions.buildTools
 
     defaultConfig {
         applicationId = "dev.jdtech.jellyfin"
-        minSdk = 27
-        targetSdk = 33
+        minSdk = Versions.minSdk
+        targetSdk = Versions.targetSdk
 
-        val appVersionCode: Int by rootProject.extra
-        val appVersionName: String by rootProject.extra
+        versionCode = Versions.appCode
+        versionName = Versions.appName
 
-        versionCode = appVersionCode
-        versionName = appVersionName
+        testInstrumentationRunner = "dev.jdtech.jellyfin.HiltTestRunner"
+    }
+
+    applicationVariants.all {
+        val variant = this
+        variant.outputs
+            .map { it as com.android.build.gradle.internal.api.BaseVariantOutputImpl }
+            .forEach { output ->
+                if (variant.buildType.name == "release") {
+                    val outputFileName = "findroid-v${variant.versionName}-${variant.flavorName}-${output.getFilter("ABI")}.apk"
+                    output.outputFileName = outputFileName
+                }
+            }
     }
 
     buildTypes {
-        getByName("debug") {
+        named("debug") {
             applicationIdSuffix = ".debug"
         }
-        getByName("release") {
+        named("release") {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
+                "proguard-rules.pro",
             )
         }
-        create("staging") {
+        register("staging") {
             initWith(getByName("release"))
             applicationIdSuffix = ".staging"
+        }
+    }
+
+    flavorDimensions += "variant"
+    productFlavors {
+        register("libre") {
+            dimension = "variant"
+            isDefault = true
         }
     }
 
@@ -50,59 +70,87 @@ android {
             isEnable = true
             reset()
             include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-            isUniversalApk = true
         }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        isCoreLibraryDesugaringEnabled = true
+
+        sourceCompatibility = Versions.java
+        targetCompatibility = Versions.java
     }
 
     buildFeatures {
-        dataBinding = true
+        buildConfig = true
         viewBinding = true
+        compose = true
+    }
+
+    dependenciesInfo {
+        // Disables dependency metadata when building APKs.
+        includeInApk = false
+        // Disables dependency metadata when building Android App Bundles.
+        includeInBundle = false
     }
 }
 
 ktlint {
+    version.set(Versions.ktlint)
     android.set(true)
     ignoreFailures.set(false)
-    disabledRules.add("max-line-length")
 }
 
 dependencies {
-    implementation(project(":core"))
-    implementation(project(":data"))
-    implementation(project(":preferences"))
-    implementation(project(":player:core"))
-    implementation(project(":player:video"))
+    implementation(projects.core)
+    implementation(projects.data)
+    implementation(projects.player.core)
+    implementation(projects.player.video)
+    implementation(projects.setup)
+    implementation(projects.modes.film)
+    implementation(projects.settings)
+
     implementation(libs.aboutlibraries.core)
     implementation(libs.aboutlibraries)
     implementation(libs.androidx.activity)
+    implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.appcompat)
+
+    // Compose
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.runtime)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
+    implementation(libs.androidx.hilt.navigation.compose)
+
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.core)
-    implementation(libs.androidx.lifecycle.runtime)
+    implementation(libs.androidx.hilt.work)
     implementation(libs.androidx.lifecycle.viewmodel)
-    implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.navigation.fragment)
     implementation(libs.androidx.navigation.ui)
     implementation(libs.androidx.paging)
-    implementation(libs.androidx.preference)
     implementation(libs.androidx.recyclerview)
-    implementation(libs.androidx.recyclerview.selection)
-    implementation(libs.androidx.room.ktx)
     implementation(libs.androidx.swiperefreshlayout)
-    implementation(libs.glide)
+    implementation(libs.androidx.work)
+    implementation(libs.coil)
+    implementation(libs.coil.compose)
+    implementation(libs.coil.svg)
     implementation(libs.hilt.android)
-    kapt(libs.hilt.compiler)
+    ksp(libs.hilt.compiler)
     implementation(libs.jellyfin.core)
     compileOnly(libs.libmpv)
     implementation(libs.material)
+    implementation(libs.media3.ffmpeg.decoder)
     implementation(libs.timber)
 
-    implementation(rootProject.files("libs/lib-decoder-ffmpeg-release.aar"))
+    coreLibraryDesugaring(libs.android.desugar.jdk)
+
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.androidx.hilt.navigation.compose)
+    implementation(libs.androidx.navigation.compose)
 }

@@ -1,9 +1,9 @@
-@Suppress("DSL_SCOPE_VIOLATION") // False positive
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose.compiler)
     alias(libs.plugins.kotlin.parcelize)
-    alias(libs.plugins.kotlin.kapt)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.androidx.navigation.safeargs)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ktlint)
@@ -11,53 +11,58 @@ plugins {
 
 android {
     namespace = "dev.jdtech.jellyfin.core"
-    compileSdk = 33
-    buildToolsVersion = "33.0.2"
+    compileSdk = Versions.compileSdk
+    buildToolsVersion = Versions.buildTools
 
     defaultConfig {
-        minSdk = 27
+        minSdk = Versions.minSdk
     }
 
     buildTypes {
-        getByName("release") {
+        named("release") {
             isMinifyEnabled = false
         }
-        create("staging") {
+        register("staging") {
             initWith(getByName("release"))
         }
     }
 
+    flavorDimensions += "variant"
+    productFlavors {
+        register("libre")
+    }
+
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = Versions.java
+        targetCompatibility = Versions.java
+    }
+
+    buildFeatures {
+        compose = true
     }
 }
 
 ktlint {
+    version.set(Versions.ktlint)
     android.set(true)
     ignoreFailures.set(false)
-    disabledRules.add("max-line-length")
 }
 
 dependencies {
-    implementation(project(":data"))
-    implementation(project(":preferences"))
-    implementation(project(":player:core"))
-    implementation(libs.androidx.activity)
+    implementation(projects.data)
+    implementation(projects.player.core)
+    implementation(projects.settings)
     implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.core)
-    implementation(libs.androidx.lifecycle.runtime)
+    implementation(libs.androidx.hilt.work)
+    ksp(libs.androidx.hilt.compiler)
     implementation(libs.androidx.lifecycle.viewmodel)
-    implementation(libs.androidx.navigation.fragment)
     implementation(libs.androidx.paging)
-    implementation(libs.androidx.preference)
     implementation(libs.androidx.room.runtime)
-    kapt(libs.androidx.room.compiler)
-    implementation(libs.androidx.room.ktx)
-    implementation(libs.glide)
-    kapt(libs.glide.compiler)
+    implementation(libs.androidx.work)
     implementation(libs.hilt.android)
-    kapt(libs.hilt.compiler)
+    ksp(libs.hilt.compiler)
     implementation(libs.jellyfin.core)
     implementation(libs.material)
     implementation(libs.timber)

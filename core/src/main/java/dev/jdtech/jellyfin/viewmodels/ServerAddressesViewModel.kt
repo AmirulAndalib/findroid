@@ -1,20 +1,21 @@
 package dev.jdtech.jellyfin.viewmodels
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.jdtech.jellyfin.api.JellyfinApi
 import dev.jdtech.jellyfin.database.ServerDatabaseDao
 import dev.jdtech.jellyfin.models.ServerAddress
-import java.util.UUID
-import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.util.UUID
+import javax.inject.Inject
 
 @HiltViewModel
 class ServerAddressesViewModel
@@ -28,12 +29,12 @@ constructor(
 
     sealed class UiState {
         data class Normal(val addresses: List<ServerAddress>) : UiState()
-        object Loading : UiState()
+        data object Loading : UiState()
         data class Error(val error: Exception) : UiState()
     }
 
-    private val _navigateToMain = MutableSharedFlow<Boolean>()
-    val navigateToMain = _navigateToMain.asSharedFlow()
+    private val eventsChannel = Channel<ServerAddressesEvent>()
+    val eventsChannelFlow = eventsChannel.receiveAsFlow()
 
     private var currentServerId: String = ""
 
@@ -73,17 +74,33 @@ constructor(
             server.currentServerAddressId = address.id
             database.update(server)
 
-            jellyfinApi.api.baseUrl = address.address
+            jellyfinApi.api.update(
+                baseUrl = address.address,
+            )
 
-            _navigateToMain.emit(true)
+            eventsChannel.send(ServerAddressesEvent.NavigateToHome)
         }
     }
 
-    fun addAddress(address: String) {
+    fun addAddress(context: Context, address: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            val serverAddress = ServerAddress(UUID.randomUUID(), currentServerId, address)
-            database.insertServerAddress(serverAddress)
-            loadAddresses(currentServerId)
+            try {
+                val jellyfinApi = JellyfinApi(context)
+                jellyfinApi.api.update(
+                    baseUrl = address,
+                )
+                val systemInfo by jellyfinApi.systemApi.getPublicSystemInfo()
+                if (systemInfo.id != currentServerId) {
+                    return@launch
+                }
+                val serverAddress = ServerAddress(UUID.randomUUID(), currentServerId, address)
+                database.insertServerAddress(serverAddress)
+                loadAddresses(currentServerId)
+            } catch (_: Exception) { }
         }
     }
+}
+
+sealed interface ServerAddressesEvent {
+    data object NavigateToHome : ServerAddressesEvent
 }
